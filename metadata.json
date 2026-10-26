@@ -1,0 +1,57 @@
+{
+  "name": "Jirani Intelligence",
+  "event": "Open Agent Hackathon 2026",
+  "organizer": "GenAI Works",
+  "event_url": "https://hackathon.genai.works/event/open-agent-hackathon-2026",
+  "track": "Solving Fragmented Intelligence",
+  "track_number": "01",
+  "summary": "An investigation desk that turns one urban-planning question into a structured brief. It routes the question, retrieves records from sources registered in Zetaris, and asks Meterless Nightshift to reason only over those records.",
+  "target_users": "Urban planners and municipal analysts whose records sit in separately registered sources.",
+  "metadata_schema": {
+    "official_json_schema_published": false,
+    "rules_checked": "2026-10-26",
+    "source": "Section 06 of the official Open Agent Hackathon 2026 rules requires a repository and README (6.3) and a clear explanation of the Zetaris and Meterless integrations, Cursor use, and any NVIDIA contribution (6.4). The rules do not publish a metadata.json schema. This file is the machine-readable copy of that explanation."
+  },
+  "architecture": {
+    "flow": [
+      "The user submits one investigation question.",
+      "Scout Intent issues a signed execution contract that names the allowed tools.",
+      "Zetaris retrieves records from registered data sources.",
+      "Meterless Nightshift reasons over those records.",
+      "The desk returns findings, supporting records, uncertainty, evidence gaps, and next steps."
+    ],
+    "zetaris": {
+      "where": "data access and query layer",
+      "role": "Zetaris is the data access and query layer that retrieves records from registered data sources for the agent.",
+      "adapter": "integrations/zetaris.py",
+      "route": "POST {ZETARIS_BASE_URL}/api/proxy/sql-editor/sqls/run-query",
+      "headers": ["Authorization: Bearer", "X-Org-ID", "X-Request-ID"],
+      "integration_status": "not_verified"
+    },
+    "meterless_nightshift": {
+      "role": "AI provider",
+      "what_it_does": "Nightshift is the OpenAI-compatible AI provider at METERLESS_BASE_URL. The reasoning step calls POST /v1/chat/completions with model meterless/auto and may accept only findings that cite retrieved record ids.",
+      "adapter": "integrations/meterless_nightshift.py",
+      "default_base_url": "http://127.0.0.1:8088/v1",
+      "default_model": "meterless/auto",
+      "integration_status": "not_verified"
+    },
+    "meterless_engine": {
+      "name": "Scout Intent",
+      "spec": "https://github.com/Meterless/Meterless/blob/main/engines/scout-intent/AGENTS.md",
+      "what_it_does": "Scout Intent is the Meterless engine that runs before any action. It classifies the planning intent with a deterministic trigger scan, guards the prompt, routes to Zetaris and Nightshift tools, and signs an HMAC execution contract. The workflow refuses unsigned, tampered, or expired contracts.",
+      "adapter": "integrations/meterless_engine.py",
+      "implemented_scope": "In-process Stage-1 pipeline for a two-intent planning registry. Stage-2 semantic scoring is not implemented. The upstream Scout eval harness has not been run.",
+      "integration_status": "local_pipeline_covered_by_unit_tests"
+    }
+  },
+  "nvidia": {
+    "integrated": false,
+    "reason": "Rule 5.2 asks teams to integrate NVIDIA where it contributes. This 8 GB Mac path has no verified Nemotron or other NVIDIA workload, so none was added."
+  },
+  "cursor": {
+    "used": true,
+    "how": "The repository, investigation workflow, adapters, tests, and Streamlit dashboard were written in Cursor during the build window."
+  },
+  "pre_existing_product_code": false
+}

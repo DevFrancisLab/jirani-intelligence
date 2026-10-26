@@ -1,0 +1,4 @@
+# Tested on Python 3.9.6. Streamlit 1.50+ requires Python 3.10.
+streamlit==1.49.1
+python-dotenv==1.2.1
+pytest==8.4.2
