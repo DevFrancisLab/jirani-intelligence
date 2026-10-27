@@ -24,9 +24,20 @@
       "where": "data access and query layer",
       "role": "Zetaris is the data access and query layer that retrieves records from registered data sources for the agent.",
       "adapter": "integrations/zetaris.py",
-      "route": "POST {ZETARIS_BASE_URL}/api/proxy/sql-editor/sqls/run-query",
-      "headers": ["Authorization: Bearer", "X-Org-ID", "X-Request-ID"],
-      "integration_status": "not_verified"
+      "client": "Direct REST RestChannel from https://github.com/zetaris/getting-started/blob/main/scripts/zetaris_sql.py",
+      "route": "POST {ZETARIS_REST_URL}/sql-editor/sqls/run",
+      "request_body": ["queryId", "sql", "source=SqlEditor", "limit"],
+      "headers": ["Authorization: Bearer ZETARIS_API_KEY", "X-Org-ID", "X-Request-ID", "Content-Type: application/json"],
+      "org_slug_used_as_endpoint": false,
+      "read_only": "One SELECT, WITH, SHOW, DESCRIBE, or EXPLAIN statement. CREATE, DROP, ALTER, INSERT, UPDATE, and DELETE are rejected before a request.",
+      "sample_query": "SELECT * FROM NY_TAXI.taxi_trips LIMIT 5",
+      "sample_query_note": "The published SQL Workspace guide verifies SELECT * FROM NY_TAXI.taxi_zones LIMIT 5. taxi_trips uses that same LIMIT 5 shape and is not treated as planning evidence.",
+      "integration_status": "not_verified",
+      "verified": {
+        "select_1": false,
+        "ny_taxi_taxi_trips": false,
+        "blocker": "ZETARIS_API_KEY is empty and ZETARIS_REST_URL is not set. ZETARIS_ORG_SLUG is not an API base."
+      }
     },
     "meterless_nightshift": {
       "role": "AI provider",

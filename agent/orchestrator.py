@@ -138,7 +138,7 @@ def investigate(
         )
         if not settings.zetaris_configured:
             steps.append(
-                "Set ZETARIS_BASE_URL, ZETARIS_ORG_ID, and ZETARIS_API_KEY or username and password in .env."
+                "Set ZETARIS_REST_URL to the API base ending in /api/v1.0, and set ZETARIS_ORG_ID and ZETARIS_API_KEY in .env."
             )
         elif not settings.zetaris_sources:
             steps.append(
@@ -258,7 +258,7 @@ def _note_query(result: QueryResult, gaps: list[str], steps: list[str], *, label
     gaps.append(f"{label}: {result.detail}")
     if result.status == "not_configured":
         steps.append(
-            "Set ZETARIS_BASE_URL, ZETARIS_ORG_ID, and ZETARIS_API_KEY or username and password in .env."
+            "Set ZETARIS_REST_URL to the API base ending in /api/v1.0, and set ZETARIS_ORG_ID and ZETARIS_API_KEY in .env."
         )
     elif result.status == "no_sources":
         steps.append(

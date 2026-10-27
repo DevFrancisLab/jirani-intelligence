@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parents[1]
 IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){0,2}$")
 ORIGIN = re.compile(r"https?://[^/\s]+$")
+REST_BASE = re.compile(r"https?://\S+/api/v1\.0$")
 ORG_ID = re.compile(r"^[0-9]+$")
 
 # Supplied Zetaris samples. They are not urban-planning evidence.
@@ -27,11 +28,12 @@ class RegisteredSource:
 @dataclass(frozen=True)
 class Settings:
     zetaris_base_url: str
+    zetaris_rest_url: str
     zetaris_org_id: str
+    zetaris_org_slug: str
     zetaris_api_key: str
     zetaris_username: str
     zetaris_password: str
-    zetaris_query_path: str
     zetaris_query_limit: int
     zetaris_timeout_seconds: float
     zetaris_engine_id: str
@@ -46,15 +48,11 @@ class Settings:
 
     @property
     def zetaris_configured(self) -> bool:
-        has_auth = bool(self.zetaris_api_key) or (
-            bool(self.zetaris_username) and bool(self.zetaris_password)
-        )
+        """Direct REST, as in scripts/zetaris_sql.py RestChannel. The UI origin is not enough."""
         return bool(
-            self.zetaris_base_url
+            self.zetaris_api_key
             and ORG_ID.fullmatch(self.zetaris_org_id or "")
-            and ORIGIN.fullmatch(self.zetaris_base_url)
-            and has_auth
-            and self.zetaris_query_path.startswith("/")
+            and REST_BASE.fullmatch(self.zetaris_rest_url or "")
         )
 
     @property
@@ -64,8 +62,10 @@ class Settings:
     def public_view(self) -> dict[str, object]:
         return {
             "zetaris_configured": self.zetaris_configured,
-            "zetaris_base_url": self.zetaris_base_url or None,
+            "zetaris_rest_url": self.zetaris_rest_url or None,
+            "zetaris_base_url_set": bool(self.zetaris_base_url),
             "zetaris_org_id_set": bool(self.zetaris_org_id),
+            "zetaris_org_slug_set": bool(self.zetaris_org_slug),
             "zetaris_api_key_set": bool(self.zetaris_api_key),
             "zetaris_username_set": bool(self.zetaris_username),
             "registered_source_count": len(self.zetaris_sources),
@@ -171,21 +171,22 @@ def load_settings(
     base_url = _clean(env.get("ZETARIS_BASE_URL")).rstrip("/")
     if base_url and not ORIGIN.fullmatch(base_url):
         warnings.append("ZETARIS_BASE_URL must be an HTTP(S) origin without a path.")
+    rest_url = _clean(env.get("ZETARIS_REST_URL")).rstrip("/")
+    if rest_url and not REST_BASE.fullmatch(rest_url):
+        warnings.append("ZETARIS_REST_URL must be the API base ending in /api/v1.0.")
     org_id = _clean(env.get("ZETARIS_ORG_ID"))
     if org_id and not ORG_ID.fullmatch(org_id):
-        warnings.append("ZETARIS_ORG_ID must be the numeric organisation id.")
-
-    query_path = _clean(env.get("ZETARIS_QUERY_PATH")) or "/api/proxy/sql-editor/sqls/run-query"
-    if not query_path.startswith("/"):
-        warnings.append("ZETARIS_QUERY_PATH must start with /.")
+        warnings.append("ZETARIS_ORG_ID must be the numeric organisation id, not the login slug.")
+    org_slug = _clean(env.get("ZETARIS_ORG_SLUG"))
 
     return Settings(
         zetaris_base_url=base_url,
+        zetaris_rest_url=rest_url,
         zetaris_org_id=org_id,
+        zetaris_org_slug=org_slug,
         zetaris_api_key=_clean(env.get("ZETARIS_API_KEY")),
         zetaris_username=_clean(env.get("ZETARIS_USERNAME")),
         zetaris_password=_clean(env.get("ZETARIS_PASSWORD")),
-        zetaris_query_path=query_path,
         zetaris_query_limit=limit,
         zetaris_timeout_seconds=_positive_float(timeout_raw, 15, "ZETARIS_TIMEOUT_SECONDS"),
         zetaris_engine_id=_clean(env.get("ZETARIS_ENGINE_ID")),

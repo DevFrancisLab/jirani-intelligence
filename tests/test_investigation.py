@@ -10,7 +10,7 @@ from integrations.meterless_nightshift import NightshiftClient
 from integrations.zetaris import ZetarisClient
 
 FIXED_ENV = {
-    "ZETARIS_BASE_URL": "http://localhost:3000",
+    "ZETARIS_REST_URL": "http://localhost:8888/api/v1.0",
     "ZETARIS_ORG_ID": "7",
     "ZETARIS_API_KEY": "test-api-key",
     "ZETARIS_SOURCES": "planning.permits|Permit rows",
@@ -52,7 +52,7 @@ def test_unconfigured_investigation_invents_nothing():
     assert "Nairobi" not in blob
     assert "population" not in blob.lower()
     assert any(layer.name == "Zetaris" and layer.state == "not_routed" for layer in brief.layer_status)
-    assert any("ZETARIS_BASE_URL" in step for step in brief.next_steps)
+    assert any("ZETARIS_REST_URL" in step for step in brief.next_steps)
 
 
 def test_retrieved_rows_are_the_only_records_sent_to_nightshift():

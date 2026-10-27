@@ -7,15 +7,22 @@ from agent.config import load_settings
 from integrations.http import HttpResponse
 from integrations.meterless_engine import ScoutIntent
 from integrations.meterless_nightshift import NightshiftClient
-from integrations.zetaris import ZetarisClient, parse_rows, row_is_sample
+from integrations.zetaris import (
+    TAXI_TRIPS_SAMPLE,
+    ZetarisClient,
+    parse_rows,
+    row_is_sample,
+    validate_read_only,
+)
 
 FIXED = datetime(2026, 10, 26, 18, 0, tzinfo=timezone.utc)
 
 
 def _settings(**overrides):
     env = {
-        "ZETARIS_BASE_URL": "http://localhost:3000",
+        "ZETARIS_REST_URL": "http://localhost:8888/api/v1.0",
         "ZETARIS_ORG_ID": "7",
+        "ZETARIS_ORG_SLUG": "not-an-endpoint",
         "ZETARIS_API_KEY": "test-api-key",
         "ZETARIS_SOURCES": "planning.permits|Permit rows",
         "METERLESS_BASE_URL": "http://127.0.0.1:8088/v1",
@@ -59,8 +66,14 @@ def test_zetaris_query_is_allowlisted_and_hides_the_key_from_sql():
     results = ZetarisClient(_settings(), recorder).select_registered()
     assert results[0].ok
     assert results[0].rows[0]["permit_id"] == "A-1"
-    assert recorder.calls[0]["body"]["sql"] == "SELECT * FROM planning.permits LIMIT 25"
-    assert "test-api-key" not in json.dumps(recorder.calls[0]["body"])
+    body = recorder.calls[0]["body"]
+    assert body["sql"] == "SELECT * FROM planning.permits LIMIT 25"
+    assert body["source"] == "SqlEditor"
+    assert body["limit"] == 25
+    assert body["queryId"]
+    assert recorder.calls[0]["url"] == "http://localhost:8888/api/v1.0/sql-editor/sqls/run"
+    assert "not-an-endpoint" not in recorder.calls[0]["url"]
+    assert "test-api-key" not in json.dumps(body)
     assert recorder.calls[0]["headers"]["X-Org-ID"] == "7"
 
 
@@ -193,3 +206,52 @@ def test_scout_routes_signs_and_refuses_bad_contracts():
     measured = scout.stage1_self_test()
     assert measured["latency_ms"] < 50
     assert "within_16ms" in measured
+
+
+def test_read_only_guard_blocks_writes_before_any_request():
+    recorder = Recorder(lambda *args: (_ for _ in ()).throw(AssertionError("called")))
+    for statement in (
+        "DROP TABLE planning.permits",
+        "INSERT INTO planning.permits VALUES (1)",
+        "SELECT 1; DROP TABLE planning.permits",
+        "CREATE TABLE planning.notes (id INT)",
+    ):
+        result = ZetarisClient(_settings(), recorder).query(statement)
+        assert result.status == "rejected"
+        assert result.duration_ms is None
+    assert recorder.calls == []
+    assert validate_read_only("SELECT * FROM planning.permits LIMIT 5") is None
+
+
+def test_select_1_requires_the_documented_row_and_records_duration():
+    ok = ZetarisClient(
+        _settings(),
+        Recorder(lambda *args: HttpResponse(200, {"data": [["1"]]}, "")),
+    ).probe()
+    assert ok.status == "ok"
+    assert ok.rows == [{"column_1": "1"}]
+    assert ok.duration_ms is not None
+
+    wrong = ZetarisClient(
+        _settings(),
+        Recorder(lambda *args: HttpResponse(200, {"data": [["2"]]}, "")),
+    ).probe()
+    assert wrong.status == "unrecognized"
+    assert wrong.ok is False
+
+
+def test_taxi_trips_sample_uses_the_fixed_limit_query():
+    def responder(method, url, headers, body, timeout):
+        assert body["sql"] == TAXI_TRIPS_SAMPLE
+        assert body["limit"] == 5
+        assert body["source"] == "SqlEditor"
+        return HttpResponse(
+            200,
+            {"headers": ["vendor_id"], "data": [["2"]]},
+            "",
+        )
+
+    result = ZetarisClient(_settings(), Recorder(responder)).query_taxi_trips_sample()
+    assert result.ok
+    assert result.rows == [{"vendor_id": "2"}]
+    assert "not planning evidence" in result.detail

@@ -21,8 +21,9 @@ def test_parse_sources_and_reject_samples_and_unsafe_names():
 def test_settings_hide_secrets():
     settings = load_settings(
         {
-            "ZETARIS_BASE_URL": "http://localhost:3000",
+            "ZETARIS_REST_URL": "http://localhost:8888/api/v1.0",
             "ZETARIS_ORG_ID": "7",
+            "ZETARIS_ORG_SLUG": "example-org-slug",
             "ZETARIS_API_KEY": "super-secret-key",
             "ZETARIS_PASSWORD": "super-secret-password",
             "METERLESS_BASE_URL": "http://127.0.0.1:8088/v1/chat/completions",
@@ -34,6 +35,8 @@ def test_settings_hide_secrets():
         load_env_file=False,
     )
     assert settings.zetaris_configured
+    assert settings.zetaris_rest_url == "http://localhost:8888/api/v1.0"
+    assert "example-org-slug" not in json.dumps(settings.public_view())
     assert settings.nightshift_configured
     assert settings.meterless_base_url == "http://127.0.0.1:8088/v1"
     assert settings.zetaris_query_limit == 100
@@ -48,7 +51,11 @@ def test_settings_hide_secrets():
 
 def test_incomplete_zetaris_is_not_configured():
     settings = load_settings(
-        {"ZETARIS_BASE_URL": "http://localhost:3000/ui", "ZETARIS_ORG_ID": "abc"},
+        {
+            "ZETARIS_REST_URL": "http://localhost:3000",
+            "ZETARIS_ORG_ID": "abc",
+            "ZETARIS_ORG_SLUG": "example-org-slug",
+        },
         load_env_file=False,
     )
     assert not settings.zetaris_configured
@@ -66,9 +73,8 @@ def test_nightshift_url_normalization():
 
 def test_env_example_has_no_secret_values():
     allowed = {
-        "ZETARIS_QUERY_PATH": "/api/proxy/sql-editor/sqls/run-query",
         "ZETARIS_QUERY_LIMIT": "25",
-        "ZETARIS_TIMEOUT_SECONDS": "15",
+        "ZETARIS_TIMEOUT_SECONDS": "30",
         "METERLESS_BASE_URL": "http://127.0.0.1:8088/v1",
         "METERLESS_MODEL": "meterless/auto",
         "METERLESS_APP_ID": "jirani-intelligence",

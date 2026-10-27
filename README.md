@@ -16,7 +16,17 @@ Question
   -> Structured brief
 ```
 
-Zetaris is the data access and query layer that retrieves records from registered data sources for the agent. It sits between the signed contract and the reasoning step. The agent never invents a table name. It may run `SHOW LIGHTNING DATABASES` and `SHOW DATASOURCES`, and `SELECT * FROM <registered source> LIMIT n` for names listed in `ZETARIS_SOURCES`.
+Zetaris is the data access and query layer that retrieves records from registered data sources for the agent. It sits between the signed contract and the reasoning step. The client is the direct REST channel from the Zetaris getting-started helper `scripts/zetaris_sql.py` (`RestChannel`), not the browser sign-in page.
+
+```text
+POST {ZETARIS_REST_URL}/sql-editor/sqls/run
+Authorization: Bearer <ZETARIS_API_KEY>
+X-Org-ID: <numeric ZETARIS_ORG_ID>
+X-Request-ID: <fresh UUID>
+{"queryId": "<uuid>", "sql": "<one read-only statement>", "source": "SqlEditor", "limit": <n>}
+```
+
+`ZETARIS_REST_URL` must be the API base ending in `/api/v1.0`. For a local install the documented default is `http://localhost:8888/api/v1.0`. A cloud sign-in URL and `ZETARIS_ORG_SLUG` are not substituted for that base. The agent accepts one `SELECT`, `WITH`, `SHOW`, `DESCRIBE`, or `EXPLAIN` statement and rejects `CREATE`, `DROP`, `ALTER`, `INSERT`, `UPDATE`, and `DELETE` before any request is sent.
 
 Meterless Nightshift is the AI provider. It is the local OpenAI-compatible API, by default `http://127.0.0.1:8088/v1`. The reasoning request uses `meterless/auto` unless `METERLESS_MODEL` says otherwise. Findings that do not cite a retrieved record id are discarded.
 
@@ -35,7 +45,7 @@ integrations/meterless_engine.py    Scout Intent
 
 | Piece | Role in this desk | Status |
 | --- | --- | --- |
-| Zetaris | Data access and query layer for registered sources | Adapter written. Live query not verified. |
+| Zetaris | Data access and query layer for registered sources. Direct REST `POST /sql-editor/sqls/run` | Adapter matches the documented client. Live `SELECT 1` and `NY_TAXI.taxi_trips` are not verified: `ZETARIS_API_KEY` is empty and `ZETARIS_REST_URL` is not set. |
 | Meterless Nightshift | AI provider for the reasoning step | Adapter written. Live completion not verified. |
 | Scout Intent | Meterless engine that signs the execution contract | Local Stage-1 pipeline covered by unit tests. Upstream eval harness not run. |
 | NVIDIA | Not integrated | No verified Nemotron or GPU workload on the 8 GB Mac path. |
@@ -67,10 +77,10 @@ Edit `.env`. Leave unknown credentials empty. The file is gitignored.
 
 Zetaris:
 
-- `ZETARIS_BASE_URL` is the UI origin, such as `http://localhost:3000`, with no path.
-- `ZETARIS_ORG_ID` is the numeric organisation id.
-- Set `ZETARIS_API_KEY`, or both `ZETARIS_USERNAME` and `ZETARIS_PASSWORD`.
-- `ZETARIS_SOURCES` lists sources the desk may query: `qualified_name|what one row represents`, separated by `;;`.
+- `ZETARIS_REST_URL` is the API base ending in `/api/v1.0`. Do not put the sign-in URL here.
+- `ZETARIS_ORG_ID` is the numeric organisation id from Management → Organisation. `ZETARIS_ORG_SLUG` is stored and is not used as a host.
+- `ZETARIS_API_KEY` is the bearer key created in Management → API Tokens.
+- `ZETARIS_SOURCES` lists planning sources the investigation may query: `qualified_name|what one row represents`, separated by `;;`. Do not register `NY_TAXI` as a planning source.
 
 Nightshift:
 
@@ -93,7 +103,9 @@ streamlit run app.py
 
 Open the URL Streamlit prints. Enter a question such as “Which registered records mention housing permits?” or “What data sources are registered?”
 
-**Run investigation** builds the brief. **Check connections** calls Zetaris with `SELECT 1` and Nightshift with `GET /v1/models`. `SELECT 1` only proves the query path answered. It is not planning evidence. A failed check stays failed.
+**Run SELECT 1** checks the direct REST query path. The documented success row is `[["1"]]`. **Read NY_TAXI.taxi_trips sample** sends `SELECT * FROM NY_TAXI.taxi_trips LIMIT 5`. The published SQL Workspace guide verifies that `LIMIT 5` shape against `NY_TAXI.taxi_zones`; this desk uses the same shape on `taxi_trips` because that is the known sample source for this check. Those rows are labeled as supplied sample data and are not planning evidence. The panel shows status, duration, and the returned rows. It does not show the API key.
+
+**Run investigation** builds the brief. **Check connections** repeats `SELECT 1` and calls Nightshift with `GET /v1/models`. A failed check stays failed.
 
 An empty catalog is a real result. A blocked prompt, a low-confidence intent, or a missing credential produces a brief with no findings and no invented rows.
 
@@ -104,11 +116,18 @@ source .venv/bin/activate
 pytest
 ```
 
-The tests cover configuration redaction, the Zetaris and Nightshift adapters, Scout Intent contracts, and the investigation workflow. HTTP is replaced with an in-memory transport. They prove that missing services, refused contracts, uncited model text, and sample databases do not become planning evidence. They do not prove that Zetaris or Nightshift is running.
+The default tests cover configuration redaction, the Zetaris and Nightshift adapters, Scout Intent contracts, and the investigation workflow. HTTP is replaced with an in-memory transport. They prove that missing services, refused contracts, write SQL, uncited model text, and sample databases do not become planning evidence. They do not prove that Zetaris or Nightshift is running.
+
+```bash
+pytest -m live
+```
+
+`tests/test_zetaris_live.py` is the live smoke test. It sends `SELECT 1` and `SELECT * FROM NY_TAXI.taxi_trips LIMIT 5` with the credentials in `.env`. A passing mock test is not a passing live test. If `ZETARIS_API_KEY` or `ZETARIS_REST_URL` is missing, this test fails and no query is sent.
 
 ## Limitations
 
-- Live Zetaris and Nightshift integrations are unverified until this machine has the services and credentials.
+- Live Zetaris is unverified. The root `.env` has `ZETARIS_ORG_ID=1` and an organisation slug, and it does not have `ZETARIS_API_KEY` or `ZETARIS_REST_URL`. The slug was not turned into a hostname.
+- Nightshift is unverified until the runtime token is set and the local API answers.
 - Scout Intent here is a small Stage-1 registry, not a conformance result against the Meterless eval harness. Semantic rescoring and the rate-limit guard are not implemented.
 - Nightshift wording is kept only when it cites record ids. Those sentences are not checked against the cell values.
 - The desk does not create Zetaris sources, infer join keys, or crawl unregistered databases.

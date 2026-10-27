@@ -69,6 +69,8 @@ def main() -> None:
         for warning in settings.warnings:
             st.warning(warning)
 
+    _zetaris_panel(settings)
+
     with st.form("investigation"):
         question = st.text_area(
             "Investigation question",
@@ -125,6 +127,47 @@ def _sidebar(settings) -> None:
             "Credentials stay in the server-side .env file. This sidebar does not show them. "
             "External integrations are not marked working until a live call succeeds."
         )
+
+
+def _zetaris_panel(settings) -> None:
+    view = settings.public_view()
+    st.markdown('<p class="section-label">Zetaris direct REST</p>', unsafe_allow_html=True)
+    st.caption(
+        "The query client uses ZETARIS_REST_URL, the API base ending in /api/v1.0. "
+        "The sign-in URL and organisation slug are not the API endpoint."
+    )
+    st.write(
+        {
+            "Configured": view["zetaris_configured"],
+            "REST URL": view["zetaris_rest_url"] or "not set",
+            "Organisation id set": view["zetaris_org_id_set"],
+            "API key set": view["zetaris_api_key_set"],
+        }
+    )
+    left, right = st.columns(2)
+    if left.button("Run SELECT 1"):
+        with st.spinner("Running SELECT 1…"):
+            st.session_state["zetaris_probe"] = ZetarisClient(settings).probe()
+    if right.button("Read NY_TAXI.taxi_trips sample"):
+        with st.spinner("Reading the supplied sample…"):
+            st.session_state["zetaris_sample"] = ZetarisClient(settings).query_taxi_trips_sample()
+    if "zetaris_probe" in st.session_state:
+        _render_query("SELECT 1", st.session_state["zetaris_probe"])
+    if "zetaris_sample" in st.session_state:
+        st.caption("These rows are the supplied NY Taxi sample. They are not planning evidence.")
+        _render_query("NY_TAXI.taxi_trips", st.session_state["zetaris_sample"])
+
+
+def _render_query(title: str, result) -> None:
+    duration = "n/a" if result.duration_ms is None else f"{result.duration_ms} ms"
+    st.markdown(
+        f'<span class="pill"><strong>{html.escape(title)}</strong> · {html.escape(result.status)}'
+        f" · {html.escape(duration)}</span>",
+        unsafe_allow_html=True,
+    )
+    st.caption(result.detail)
+    if result.rows:
+        st.dataframe(result.rows, use_container_width=True, hide_index=True)
 
 
 def _check(settings) -> dict:
