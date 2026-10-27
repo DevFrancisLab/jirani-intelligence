@@ -10,12 +10,14 @@ from integrations.meterless_nightshift import NightshiftClient
 from integrations.zetaris import ZetarisClient
 
 FIXED_ENV = {
-    "ZETARIS_REST_URL": "http://localhost:8888/api/v1.0",
+    "ZETARIS_BASE_URL": "http://localhost:3000",
     "ZETARIS_ORG_ID": "7",
     "ZETARIS_API_KEY": "test-api-key",
     "ZETARIS_SOURCES": "planning.permits|Permit rows",
+    "METERLESS_ENABLED": "true",
     "METERLESS_BASE_URL": "http://127.0.0.1:8088/v1",
-    "METERLESS_RUNTIME_TOKEN": "test-runtime-token",
+    "METERLESS_API_KEY": "test-runtime-token",
+    "METERLESS_MODEL": "gpt-oss-20b-nvidia-test",
     "SCOUT_SIGNING_KEY": "test-signing-key",
 }
 
@@ -48,11 +50,22 @@ def test_unconfigured_investigation_invents_nothing():
     assert calls == []
     assert brief.findings == []
     assert brief.supporting_records == []
-    blob = json.dumps(brief.as_dict())
+    blob = json.dumps(
+        {
+            "findings": brief.as_dict()["findings"],
+            "supporting_records": brief.as_dict()["supporting_records"],
+            "evidence_gaps": brief.evidence_gaps,
+            "uncertainty": brief.uncertainty,
+        }
+    )
     assert "Nairobi" not in blob
     assert "population" not in blob.lower()
     assert any(layer.name == "Zetaris" and layer.state == "not_routed" for layer in brief.layer_status)
-    assert any("ZETARIS_REST_URL" in step for step in brief.next_steps)
+    assert any("ZETARIS_BASE_URL" in step for step in brief.next_steps)
+    assert brief.nightshift_handoff is not None
+    assert brief.nightshift_handoff["api_call"] is False
+    assert "not evidence about Nairobi or Kilimani" in brief.nightshift_handoff["prompt"]
+    assert any(layer.name == "Meterless Nightshift" and layer.state == "browser_handoff" for layer in brief.layer_status)
 
 
 def test_retrieved_rows_are_the_only_records_sent_to_nightshift():
@@ -97,7 +110,7 @@ def test_sample_databases_never_become_planning_evidence():
 
     env = dict(FIXED_ENV)
     env["ZETARIS_SOURCES"] = ""
-    env["METERLESS_RUNTIME_TOKEN"] = "test-runtime-token"
+    env["METERLESS_API_KEY"] = "test-runtime-token"
     settings = load_settings(env, load_env_file=False)
     brief = investigate(
         "What data sources are registered?",

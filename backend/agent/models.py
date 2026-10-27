@@ -61,6 +61,9 @@ class InvestigationBrief:
     layer_status: list[LayerStatus] = field(default_factory=list)
     contract: dict[str, Any] | None = None
     clarification: dict[str, Any] | None = None
+    prior_memories: list[dict[str, Any]] = field(default_factory=list)
+    nightshift_handoff: dict[str, Any] | None = None
+    nightshift_meta: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return _jsonable(asdict(self))

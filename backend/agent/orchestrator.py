@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from agent.config import Settings, load_settings
 from agent.models import Finding, InvestigationBrief, LayerStatus, SupportingRecord
+from integrations.hmem import Hmem
 from integrations.meterless_engine import ScoutIntent
 from integrations.meterless_nightshift import NightshiftClient
+from integrations.nightshift_web import prepare_task
 from integrations.zetaris import QueryResult, ZetarisClient
 
 
@@ -20,6 +22,7 @@ def investigate(
     scout: ScoutIntent | None = None,
     zetaris: ZetarisClient | None = None,
     nightshift: NightshiftClient | None = None,
+    hmem: Hmem | None = None,
 ) -> InvestigationBrief:
     settings = settings or load_settings()
     scout = scout or ScoutIntent(settings.scout_signing_key)
@@ -28,6 +31,7 @@ def investigate(
     text = (question or "").strip()
     if not text:
         return _empty("Enter an investigation question.")
+    recalled = hmem.query(text) if hmem else {"memories": [], "context": "", "trace": {}}
 
     availability = {
         "zetaris": settings.zetaris_configured,
@@ -138,7 +142,7 @@ def investigate(
         )
         if not settings.zetaris_configured:
             steps.append(
-                "Set ZETARIS_REST_URL to the API base ending in /api/v1.0, and set ZETARIS_ORG_ID and ZETARIS_API_KEY in .env."
+                "Set ZETARIS_BASE_URL to the web UI origin with no path, and set ZETARIS_ORG_ID and ZETARIS_API_KEY in .env."
             )
         elif not settings.zetaris_sources:
             steps.append(
@@ -154,36 +158,67 @@ def investigate(
         uncertainty.append("There is no retrieved evidence for this question.")
 
     reasoning_records = [record.as_dict() for record in records]
+    nightshift_meta: dict | None = None
     if "nightshift.reason_over_records" in tools and reasoning_records:
-        reasoning = nightshift.reason(text, reasoning_records)
+        reasoning = nightshift.reason(
+            text,
+            reasoning_records,
+            memory_context=recalled.get("context", ""),
+        )
         findings = [
             Finding(
                 statement=item["statement"],
                 record_ids=list(item["record_ids"]),
-                source="nightshift",
+                source=item.get("source") or "nightshift_ai_interpretation",
             )
             for item in reasoning.findings
         ]
+        nightshift_meta = {
+            "configured_model": reasoning.configured_model,
+            "response_model": reasoning.response_model,
+            "state": reasoning.state,
+            "http_status": reasoning.http_status,
+            "provider_meta": reasoning.provider_meta,
+            "intended_label": "GPT-OSS 20B (NVIDIA cloud)",
+            "nvidia_label_is_not_proof": True,
+        }
         statuses.append(LayerStatus("Meterless Nightshift", reasoning.state, reasoning.detail))
-        if reasoning.state != "ok":
-            gaps.append(reasoning.detail)
-            steps.append(
-                "Start Meterless Nightshift and set METERLESS_RUNTIME_TOKEN from its proxy-token file."
-            )
-        elif not findings:
+        if reasoning.state == "ok" and not findings:
             gaps.append("Nightshift returned no findings that cite the retrieved records.")
+        elif reasoning.state != "ok":
+            gaps.append(reasoning.detail)
+            if reasoning.response_text:
+                uncertainty.append(
+                    "Nightshift returned text that was not accepted as cited findings. "
+                    "It is an AI interpretation only."
+                )
+            steps.append(
+                "Check METERLESS_BASE_URL, METERLESS_API_KEY, METERLESS_MODEL, and that the "
+                "Nightshift hotspot (full Windows / Mac M5+ / DGX) is running. "
+                "Meterless Web has no app endpoint."
+            )
     else:
         findings = []
         if not settings.nightshift_configured:
             statuses.append(
                 LayerStatus(
                     "Meterless Nightshift",
-                    "not_configured",
-                    "Set METERLESS_BASE_URL and METERLESS_RUNTIME_TOKEN.",
+                    "browser_handoff" if not settings.meterless_enabled else "not_configured",
+                    (
+                        "METERLESS_ENABLED is false or credentials are incomplete. "
+                        "A Meterless Web cockpit task is prepared when the HTTP path is off. "
+                        "A pasted answer is an AI interpretation, not a retrieved fact."
+                    ),
                 )
             )
-            steps.append(
-                "Set METERLESS_RUNTIME_TOKEN to use Nightshift as the AI provider."
+            steps.extend(
+                [
+                    "To use GPT-OSS 20B over the documented Nightshift HTTP API, set "
+                    "METERLESS_ENABLED=true and fill METERLESS_BASE_URL, METERLESS_API_KEY, "
+                    "and the exact METERLESS_MODEL id from your Meterless Providers card.",
+                    "Or open https://meterless.ai/Nightshift/WEB, queue the prepared task, "
+                    "and paste the Morning answer back.",
+                ]
             )
         elif not reasoning_records:
             statuses.append(
@@ -204,6 +239,26 @@ def investigate(
 
     if settings.warnings:
         uncertainty.extend(settings.warnings)
+    if not records and not settings.zetaris_sources:
+        steps.append(
+            "Register a real planning source in ZETARIS_SOURCES as qualified_name|what one row represents. "
+            "Do not register NY_TAXI, TPCDS, or TPCH."
+        )
+    if hmem:
+        _remember_investigation(hmem, text, records)
+        count = len(recalled.get("memories") or [])
+        noun = "memory" if count == 1 else "memories"
+        statuses.append(
+            LayerStatus(
+                "H-MEM",
+                "recalled",
+                f"{count} prior {noun} above the 0.35 threshold. "
+                "The upstream conformance suite has not been run.",
+            )
+        )
+    handoff = None
+    if not settings.nightshift_configured:
+        handoff = prepare_task(text, [record.as_dict() for record in records], recalled.get("context", ""))
     if not steps:
         steps.append("Compare the cited records with the source system before acting on a finding.")
 
@@ -216,7 +271,35 @@ def investigate(
         next_steps=_unique(steps),
         layer_status=statuses,
         contract=public_contract,
+        prior_memories=list(recalled.get("memories") or []),
+        nightshift_handoff=handoff,
+        nightshift_meta=nightshift_meta,
     )
+
+
+def _remember_investigation(hmem: Hmem, question: str, records: list[SupportingRecord]) -> None:
+    hmem.remember(
+        content=question,
+        source="user",
+        origin="chat_message",
+        memory_type="general",
+        layer="short_term",
+        tags=["project:planning"],
+        label="Investigation question",
+    )
+    for record in records:
+        visible = " ".join(f"{key} {value}" for key, value in list(record.fields.items())[:8])
+        hmem.remember(
+            content=f"{record.source} {record.record_id} {visible}".strip(),
+            source=f"zetaris:{record.record_id}",
+            origin="document",
+            memory_type="factual",
+            layer="working",
+            refs=[record.record_id],
+            tags=["project:planning", "evidence"],
+            label="Zetaris retrieved row",
+            confidence=0.9,
+        )
 
 
 def _empty(message: str) -> InvestigationBrief:
@@ -258,7 +341,7 @@ def _note_query(result: QueryResult, gaps: list[str], steps: list[str], *, label
     gaps.append(f"{label}: {result.detail}")
     if result.status == "not_configured":
         steps.append(
-            "Set ZETARIS_REST_URL to the API base ending in /api/v1.0, and set ZETARIS_ORG_ID and ZETARIS_API_KEY in .env."
+            "Set ZETARIS_BASE_URL to the web UI origin with no path, and set ZETARIS_ORG_ID and ZETARIS_API_KEY in .env."
         )
     elif result.status == "no_sources":
         steps.append(

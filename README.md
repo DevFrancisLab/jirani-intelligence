@@ -2,139 +2,133 @@
 
 Jirani Intelligence is an urban-planning investigation desk for the Open Agent Hackathon 2026, Track 01, “Solving Fragmented Intelligence.”
 
-A planner submits one question. The desk does not answer from memory. Scout Intent decides which tools are in scope, Zetaris reads registered sources, and Meterless Nightshift may reason only over the rows that came back. The result is a brief with findings, supporting records, uncertainty, evidence gaps, and next steps.
+A planner submits one question. Scout Intent decides which tools are in scope, Zetaris reads registered sources, H-MEM recalls prior notes, and Meterless Nightshift may reason only over retrieved records. The result is a structured brief with findings, evidence references, uncertainty, gaps, and next steps.
 
-Zetaris and Nightshift are not marked working in this repository. Unit tests cover the workflow with fake responses. A live call is the only thing that can change that.
+## Stack
+
+| Layer | Technology | Location |
+| --- | --- | --- |
+| Frontend | React + TypeScript (Vite) | `frontend/` |
+| Backend | Django 4.2 + DRF | `backend/` |
+| Prototype UI | Streamlit (legacy only) | `backend/legacy/` |
+
+There was no pre-existing React or Django app in this repository. The Streamlit dashboard was the prototype. Integrations and orchestration were moved under `backend/` and exposed as JSON APIs for the React client.
 
 ## Architecture
 
 ```text
-Question
-  -> Scout Intent          signs an execution contract
-  -> Zetaris               retrieves records from registered sources
-  -> Meterless Nightshift  reasons over those records
-  -> Structured brief
+React UI  --HTTP /api/*-->  Django
+                              ├─ Zetaris UI-proxy SQL
+                              ├─ H-MEM memory
+                              ├─ Meterless Nightshift (HTTP when enabled)
+                              └─ Meterless Web cockpit handoff (when disabled)
 ```
 
-Zetaris is the data access and query layer that retrieves records from registered data sources for the agent. It sits between the signed contract and the reasoning step. The client is the direct REST channel from the Zetaris getting-started helper `scripts/zetaris_sql.py` (`RestChannel`), not the browser sign-in page.
+Details: [docs/architecture.md](docs/architecture.md).
+
+Zetaris is the data access and query layer that retrieves records from registered data sources for the agent.
 
 ```text
-POST {ZETARIS_REST_URL}/sql-editor/sqls/run
+POST {ZETARIS_BASE_URL}/api/proxy/sql-editor/sqls/run-query
 Authorization: Bearer <ZETARIS_API_KEY>
-X-Org-ID: <numeric ZETARIS_ORG_ID>
-X-Request-ID: <fresh UUID>
-{"queryId": "<uuid>", "sql": "<one read-only statement>", "source": "SqlEditor", "limit": <n>}
+X-Org-ID: <numeric org id>
+{"sql": "...", "limit": n}
 ```
 
-`ZETARIS_REST_URL` must be the API base ending in `/api/v1.0`. For a local install the documented default is `http://localhost:8888/api/v1.0`. A cloud sign-in URL and `ZETARIS_ORG_SLUG` are not substituted for that base. The agent accepts one `SELECT`, `WITH`, `SHOW`, `DESCRIBE`, or `EXPLAIN` statement and rejects `CREATE`, `DROP`, `ALTER`, `INSERT`, `UPDATE`, and `DELETE` before any request is sent.
-
-Meterless Nightshift is the AI provider. It is the local OpenAI-compatible API, by default `http://127.0.0.1:8088/v1`. The reasoning request uses `meterless/auto` unless `METERLESS_MODEL` says otherwise. Findings that do not cite a retrieved record id are discarded.
-
-The Meterless engine in this workflow is **Scout Intent**. It is the engine that runs before any action: it classifies intent, guards the prompt, routes to tools, and signs an execution contract. The implementation in `integrations/meterless_engine.py` is the Stage-1 deterministic pipeline for two planning intents. Stage-2 semantic scoring is not included, and the upstream Scout eval harness has not been run. Spec: [engines/scout-intent/AGENTS.md](https://github.com/Meterless/Meterless/blob/main/engines/scout-intent/AGENTS.md).
+Meterless Nightshift (when `METERLESS_ENABLED=true`):
 
 ```text
-app.py                              Streamlit dashboard
-agent/orchestrator.py               contract -> query -> reason -> brief
-agent/config.py                     environment, no secrets in repr
-integrations/zetaris.py             Zetaris UI-proxy query client
-integrations/meterless_nightshift.py
-integrations/meterless_engine.py    Scout Intent
+POST {METERLESS_BASE_URL}/chat/completions
+Authorization: Bearer <METERLESS_API_KEY>
+{"model": "<exact METERLESS_MODEL>", "messages": [...]}
 ```
 
-## Sponsor technology
+Put the exact GPT-OSS 20B (NVIDIA cloud) model id into `METERLESS_MODEL`. Do not substitute Llama or another provider. A NVIDIA label is not proof of NVIDIA routing. Direct chat/completions is not full Nightshift tool-capable job orchestration. Meterless Web has no app endpoint; leave HTTP disabled and use the cockpit handoff when you only have Web.
 
-| Piece | Role in this desk | Status |
-| --- | --- | --- |
-| Zetaris | Data access and query layer for registered sources. Direct REST `POST /sql-editor/sqls/run` | Adapter matches the documented client. Live `SELECT 1` and `NY_TAXI.taxi_trips` are not verified: `ZETARIS_API_KEY` is empty and `ZETARIS_REST_URL` is not set. |
-| Meterless Nightshift | AI provider for the reasoning step | Adapter written. Live completion not verified. |
-| Scout Intent | Meterless engine that signs the execution contract | Local Stage-1 pipeline covered by unit tests. Upstream eval harness not run. |
-| NVIDIA | Not integrated | No verified Nemotron or GPU workload on the 8 GB Mac path. |
-| Cursor | Used to write this repository | Development tool, not a runtime dependency. |
+## Install and run
 
-Official rule 5.1 requires Zetaris and Meterless. Rule 5.2 asks for NVIDIA where it contributes. Adding a NVIDIA call that does not run would not be a contribution, so it is absent.
-
-Supplied Zetaris samples such as `NY_TAXI`, `TPCDS`, and `TPCH` are excluded from planning evidence. Registering one of those names in `ZETARIS_SOURCES` is ignored.
-
-## Installation
-
-The machine this project was set up on has Python 3.9.6. Streamlit 1.50 and newer require Python 3.10, so `requirements.txt` stays on the last 3.9-compatible Streamlit line.
+### Backend
 
 ```bash
+cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+python manage.py check
+python manage.py migrate
+python manage.py runserver 8000
 ```
 
-`.venv/` is gitignored. Do not commit it.
+### Frontend
 
-## Setup
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Requires Node.js 18+ and npm. Open http://127.0.0.1:5173. Vite proxies `/api` to Django.
+
+More: [docs/development.md](docs/development.md).
+
+## Environment
+
+Canonical secrets live in the **repository-root** `.env` (gitignored). Copy placeholders:
 
 ```bash
 cp .env.example .env
+# or cp backend/.env.example backend/.env for backend-only overrides
 ```
 
-Edit `.env`. Leave unknown credentials empty. The file is gitignored.
-
-Zetaris:
-
-- `ZETARIS_REST_URL` is the API base ending in `/api/v1.0`. Do not put the sign-in URL here.
-- `ZETARIS_ORG_ID` is the numeric organisation id from Management → Organisation. `ZETARIS_ORG_SLUG` is stored and is not used as a host.
-- `ZETARIS_API_KEY` is the bearer key created in Management → API Tokens.
-- `ZETARIS_SOURCES` lists planning sources the investigation may query: `qualified_name|what one row represents`, separated by `;;`. Do not register `NY_TAXI` as a planning source.
-
-Nightshift:
-
-- Run Nightshift locally.
-- `METERLESS_BASE_URL` defaults to `http://127.0.0.1:8088/v1`.
-- Copy the runtime token from Nightshift’s `proxy-token` file into `METERLESS_RUNTIME_TOKEN`.
-
-Scout Intent:
-
-- `SCOUT_SIGNING_KEY` is a local integrity key for contract signatures. It is not a sponsor credential. If it is empty, the process uses an ephemeral key and earlier contracts will not verify after a restart.
-
-The dashboard loads this file on the server with `python-dotenv`. Secrets are not written into the page, test assertions, or logs.
-
-## Usage
+Frontend may set only:
 
 ```bash
-source .venv/bin/activate
-streamlit run app.py
+# frontend/.env.example
+VITE_API_BASE_URL=
 ```
 
-Open the URL Streamlit prints. Enter a question such as “Which registered records mention housing permits?” or “What data sources are registered?”
+Never put Zetaris or Meterless keys in `VITE_*` variables.
 
-**Run SELECT 1** checks the direct REST query path. The documented success row is `[["1"]]`. **Read NY_TAXI.taxi_trips sample** sends `SELECT * FROM NY_TAXI.taxi_trips LIMIT 5`. The published SQL Workspace guide verifies that `LIMIT 5` shape against `NY_TAXI.taxi_zones`; this desk uses the same shape on `taxi_trips` because that is the known sample source for this check. Those rows are labeled as supplied sample data and are not planning evidence. The panel shows status, duration, and the returned rows. It does not show the API key.
+Key backend variables: `ZETARIS_BASE_URL`, `ZETARIS_ORG_ID`, `ZETARIS_API_KEY`, `ZETARIS_SOURCES`, `METERLESS_ENABLED`, `METERLESS_BASE_URL`, `METERLESS_API_KEY`, `METERLESS_MODEL`, `SCOUT_SIGNING_KEY`.
 
-**Run investigation** builds the brief. **Check connections** repeats `SELECT 1` and calls Nightshift with `GET /v1/models`. A failed check stays failed.
+## API routes
 
-An empty catalog is a real result. A blocked prompt, a low-confidence intent, or a missing credential produces a brief with no findings and no invented rows.
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/api/health/` | Liveness |
+| GET | `/api/status/` | Public config flags (no secrets) |
+| POST | `/api/connections/` | Layer probes |
+| POST | `/api/zetaris/probe/` | `SELECT 1` |
+| POST | `/api/zetaris/sample/taxi-trips/` | NY taxi sample (not planning evidence) |
+| POST | `/api/investigations/` | Run investigation `{ "question": "..." }` |
+| GET | `/api/memory/` | Recent H-MEM entries |
+| POST | `/api/nightshift/cockpit-answer/` | Record pasted Web cockpit answer |
 
-## Testing
+## Tests
 
 ```bash
-source .venv/bin/activate
-pytest
-```
-
-The default tests cover configuration redaction, the Zetaris and Nightshift adapters, Scout Intent contracts, and the investigation workflow. HTTP is replaced with an in-memory transport. They prove that missing services, refused contracts, write SQL, uncited model text, and sample databases do not become planning evidence. They do not prove that Zetaris or Nightshift is running.
-
-```bash
+cd backend && source .venv/bin/activate
+pytest -m "not live"
 pytest -m live
+
+cd frontend
+npm test
+npm run build
 ```
 
-`tests/test_zetaris_live.py` is the live smoke test. It sends `SELECT 1` and `SELECT * FROM NY_TAXI.taxi_trips LIMIT 5` with the credentials in `.env`. A passing mock test is not a passing live test. If `ZETARIS_API_KEY` or `ZETARIS_REST_URL` is missing, this test fails and no query is sent.
+Mock tests do not prove live Zetaris or Nightshift. Live markers call external services.
 
-## Limitations
+## Integration status
 
-- Live Zetaris is unverified. The root `.env` has `ZETARIS_ORG_ID=1` and an organisation slug, and it does not have `ZETARIS_API_KEY` or `ZETARIS_REST_URL`. The slug was not turned into a hostname.
-- Nightshift is unverified until the runtime token is set and the local API answers.
-- Scout Intent here is a small Stage-1 registry, not a conformance result against the Meterless eval harness. Semantic rescoring and the rate-limit guard are not implemented.
-- Nightshift wording is kept only when it cites record ids. Those sentences are not checked against the cell values.
-- The desk does not create Zetaris sources, infer join keys, or crawl unregistered databases.
-- Query results are capped at 100 rows, and the default is 25, so an 8 GB machine is not asked to pull a full table.
-- Execution contracts expire after five minutes.
-- There is no NVIDIA path.
+| Piece | Status |
+| --- | --- |
+| Zetaris UI-proxy | Adapter preserved; live checks depend on the cluster |
+| Meterless HTTP | Scaffolded; requires enabled flag, credentials, and a connected hotspot backend |
+| Meterless Web handoff | Available when HTTP is disabled |
+| H-MEM / Scout Intent | Local subsets; upstream conformance/eval not run |
+| Nairobi/Kilimani planning sources | Not registered; NY taxi is sample-only |
+| NVIDIA GPT-OSS 20B | Intended model label; live NVIDIA routing not verified |
 
-## Official submission rules
+## Sponsor notes
 
-Checked on 26 October 2026 at the [event page](https://hackathon.genai.works/event/open-agent-hackathon-2026). Section 06 requires a 1–4 minute demo video (6.1), a slide deck (6.2), this repository and README (6.3), and an explanation of Zetaris, Meterless, Cursor, and NVIDIA (6.4). The rules do not publish a `metadata.json` schema. `metadata.json` records the same sponsor explanation for the track.
+Official rule 5.1 requires Zetaris and Meterless. Rule 5.2 asks for NVIDIA where it contributes. This desk targets GPT-OSS 20B (NVIDIA cloud) through Meterless configuration without inventing an endpoint or claiming unverified execution.

@@ -1,15 +1,17 @@
-"""Zetaris direct REST client.
+"""Zetaris UI-proxy client.
 
-This follows scripts/zetaris_sql.py RestChannel in the Zetaris getting-started
-repository. It does not call the web UI origin and does not derive a host from
-the organisation slug.
+This follows scripts/query_zetaris.py and scripts/zetaris_api.py in the Zetaris
+getting-started repository. ZETARIS_BASE_URL is the web UI origin with no path.
+The organisation slug and a login-page URL are not the endpoint, and this client
+does not call the direct REST API.
 
-POST {ZETARIS_REST_URL}/sql-editor/sqls/run
+POST {ZETARIS_BASE_URL}/api/proxy/sql-editor/sqls/run-query
 Headers: Authorization: Bearer <ZETARIS_API_KEY>, X-Org-ID, X-Request-ID,
 Content-Type: application/json
-Body: {"queryId": <uuid>, "sql": <statement>, "source": "SqlEditor", "limit": <n>}
+Body: {"sql": <statement>, "limit": <n>, "engineId": <optional>}
 
-Supplied NY Taxi rows are sample data. They are not urban-planning evidence.
+Supplied NY Taxi rows are New York sample data. They are not evidence about
+Nairobi or Kilimani.
 """
 
 from __future__ import annotations
@@ -20,10 +22,10 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from agent.config import SAMPLE_DATABASES, Settings
+from agent.config import ORIGIN, SAMPLE_DATABASES, Settings
 from integrations.http import HttpResponse, scrub, urllib_transport
 
-QUERY_PATH = "/sql-editor/sqls/run"
+QUERY_PATH = "/api/proxy/sql-editor/sqls/run-query"
 SELECT_1 = "SELECT 1"
 # The published SQL Workspace sample read is `SELECT * FROM NY_TAXI.taxi_zones LIMIT 5`.
 # This project was asked to read the known NY_TAXI.taxi_trips source with that same
@@ -66,7 +68,10 @@ class ZetarisClient:
     def query_taxi_trips_sample(self) -> QueryResult:
         """Read-only sample of the supplied NY Taxi trips table. Not planning evidence."""
         result = self.query(TAXI_TRIPS_SAMPLE, kind="sample", limit=5)
-        result.detail = "Supplied NY_TAXI sample, not planning evidence. " + result.detail
+        result.detail = (
+            "New York sample data from NY_TAXI.taxi_trips. "
+            "Not evidence about Nairobi or Kilimani. " + result.detail
+        )
         return result
 
     def list_catalog(self) -> QueryResult:
@@ -129,16 +134,16 @@ class ZetarisClient:
         if not self.settings.zetaris_configured:
             return QueryResult("not_configured", self._configuration_detail(), statement=statement)
         row_limit = limit if limit is not None else self.settings.zetaris_query_limit
-        body = {
-            "queryId": str(uuid.uuid4()),
+        body: dict[str, Any] = {
             "sql": statement.strip().rstrip(";"),
-            "source": "SqlEditor",
             "limit": row_limit,
         }
+        if self.settings.zetaris_engine_id:
+            body["engineId"] = self.settings.zetaris_engine_id
         started = time.perf_counter()
         response = self.transport(
             "POST",
-            self.settings.zetaris_rest_url + QUERY_PATH,
+            self.settings.zetaris_base_url + QUERY_PATH,
             {
                 "Authorization": f"Bearer {self.settings.zetaris_api_key}",
                 "X-Org-ID": self.settings.zetaris_org_id,
@@ -155,18 +160,16 @@ class ZetarisClient:
 
     def _configuration_detail(self) -> str:
         missing = []
-        if not self.settings.zetaris_rest_url:
-            missing.append("ZETARIS_REST_URL (API base ending in /api/v1.0)")
-        elif not self.settings.zetaris_rest_url.endswith("/api/v1.0"):
-            missing.append("ZETARIS_REST_URL must end in /api/v1.0")
+        if not ORIGIN.fullmatch(self.settings.zetaris_base_url or ""):
+            missing.append("ZETARIS_BASE_URL to the web UI origin with no path; a login page is not the origin")
         if not self.settings.zetaris_org_id:
             missing.append("ZETARIS_ORG_ID")
         if not self.settings.zetaris_api_key:
             missing.append("ZETARIS_API_KEY")
-        detail = "Zetaris direct REST is not configured."
+        detail = "Zetaris UI proxy is not configured."
         if missing:
             detail += " Set " + ", ".join(missing) + "."
-        if self.settings.zetaris_org_slug and not self.settings.zetaris_rest_url:
+        if self.settings.zetaris_org_slug:
             detail += " ZETARIS_ORG_SLUG is not an API endpoint."
         if self.settings.warnings:
             detail += " " + " ".join(self.settings.warnings)
@@ -262,9 +265,15 @@ def _interpret(response: HttpResponse, statement: str, kind: str) -> QueryResult
             statement=statement,
         )
     if response.status != 200:
+        detail = f"Zetaris query failed: HTTP {response.status} {scrub(response.raw_text)}"
+        if response.status == 400 and "not allowed" in (response.raw_text or "").lower():
+            detail += (
+                " Check that ZETARIS_ORG_ID is the numeric organisation id and that "
+                "ZETARIS_API_KEY was created under Management → API Tokens."
+            )
         return QueryResult(
             "error",
-            f"Zetaris query failed: HTTP {response.status} {scrub(response.raw_text)}",
+            detail,
             http_status=response.status,
             statement=statement,
         )

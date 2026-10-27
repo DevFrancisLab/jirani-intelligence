@@ -9,7 +9,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+# backend/ — integrations and H-MEM data live here. Repo-root .env is canonical.
 ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = ROOT.parent
 IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){0,2}$")
 ORIGIN = re.compile(r"https?://[^/\s]+$")
 REST_BASE = re.compile(r"https?://\S+/api/v1\.0$")
@@ -38,8 +40,9 @@ class Settings:
     zetaris_timeout_seconds: float
     zetaris_engine_id: str
     zetaris_sources: tuple[RegisteredSource, ...]
+    meterless_enabled: bool
     meterless_base_url: str
-    meterless_runtime_token: str
+    meterless_api_key: str
     meterless_model: str
     meterless_app_id: str
     meterless_timeout_seconds: float
@@ -48,21 +51,35 @@ class Settings:
 
     @property
     def zetaris_configured(self) -> bool:
-        """Direct REST, as in scripts/zetaris_sql.py RestChannel. The UI origin is not enough."""
+        """UI proxy, as in scripts/query_zetaris.py. The direct REST base is not required."""
         return bool(
             self.zetaris_api_key
             and ORG_ID.fullmatch(self.zetaris_org_id or "")
-            and REST_BASE.fullmatch(self.zetaris_rest_url or "")
+            and ORIGIN.fullmatch(self.zetaris_base_url or "")
         )
 
     @property
+    def nightshift_missing(self) -> list[str]:
+        missing: list[str] = []
+        if not self.meterless_base_url:
+            missing.append("METERLESS_BASE_URL")
+        if not self.meterless_api_key:
+            missing.append("METERLESS_API_KEY")
+        if not self.meterless_model:
+            missing.append("METERLESS_MODEL")
+        return missing
+
+    @property
     def nightshift_configured(self) -> bool:
-        return bool(self.meterless_base_url and self.meterless_runtime_token)
+        """Enabled OpenAI-compatible Nightshift hotspot / inference base."""
+        return bool(self.meterless_enabled and not self.nightshift_missing)
 
     def public_view(self) -> dict[str, object]:
         return {
             "zetaris_configured": self.zetaris_configured,
-            "zetaris_rest_url": self.zetaris_rest_url or None,
+            "zetaris_base_url": self.zetaris_base_url
+            if ORIGIN.fullmatch(self.zetaris_base_url or "")
+            else None,
             "zetaris_base_url_set": bool(self.zetaris_base_url),
             "zetaris_org_id_set": bool(self.zetaris_org_id),
             "zetaris_org_slug_set": bool(self.zetaris_org_slug),
@@ -70,10 +87,13 @@ class Settings:
             "zetaris_username_set": bool(self.zetaris_username),
             "registered_source_count": len(self.zetaris_sources),
             "registered_sources": [source.name for source in self.zetaris_sources],
+            "meterless_enabled": self.meterless_enabled,
             "nightshift_configured": self.nightshift_configured,
             "nightshift_base_url": self.meterless_base_url or None,
-            "nightshift_token_set": bool(self.meterless_runtime_token),
-            "nightshift_model": self.meterless_model,
+            "nightshift_api_key_set": bool(self.meterless_api_key),
+            "nightshift_model": self.meterless_model or None,
+            "intended_model_label": "GPT-OSS 20B (NVIDIA cloud)",
+            "nvidia_label_is_not_proof": True,
             "scout_signing_key_set": bool(self.scout_signing_key),
             "warnings": list(self.warnings),
         }
@@ -137,11 +157,12 @@ def load_settings(
     load_env_file: bool = True,
 ) -> Settings:
     if load_env_file:
+        load_dotenv(REPO_ROOT / ".env", override=False)
         load_dotenv(ROOT / ".env", override=False)
     env = os.environ if environ is None else environ
 
     limit_raw = _clean(env.get("ZETARIS_QUERY_LIMIT")) or "25"
-    timeout_raw = _clean(env.get("ZETARIS_TIMEOUT_SECONDS")) or "15"
+    timeout_raw = _clean(env.get("ZETARIS_TIMEOUT_SECONDS")) or "30"
     night_timeout_raw = _clean(env.get("METERLESS_TIMEOUT_SECONDS")) or "60"
     warnings: list[str] = []
     try:
@@ -178,6 +199,14 @@ def load_settings(
     if org_id and not ORG_ID.fullmatch(org_id):
         warnings.append("ZETARIS_ORG_ID must be the numeric organisation id, not the login slug.")
     org_slug = _clean(env.get("ZETARIS_ORG_SLUG"))
+    enabled_raw = _clean(env.get("METERLESS_ENABLED")).lower()
+    meterless_enabled = enabled_raw in {"1", "true", "yes", "on"}
+    # Prefer METERLESS_API_KEY. METERLESS_RUNTIME_TOKEN remains a documented alias
+    # for the same Bearer credential from a full-edition proxy-token file.
+    api_key = _clean(env.get("METERLESS_API_KEY")) or _clean(env.get("METERLESS_RUNTIME_TOKEN"))
+    model = _clean(env.get("METERLESS_MODEL"))
+    if meterless_enabled and not model:
+        warnings.append("METERLESS_ENABLED is true but METERLESS_MODEL is empty.")
 
     return Settings(
         zetaris_base_url=base_url,
@@ -188,14 +217,15 @@ def load_settings(
         zetaris_username=_clean(env.get("ZETARIS_USERNAME")),
         zetaris_password=_clean(env.get("ZETARIS_PASSWORD")),
         zetaris_query_limit=limit,
-        zetaris_timeout_seconds=_positive_float(timeout_raw, 15, "ZETARIS_TIMEOUT_SECONDS"),
+        zetaris_timeout_seconds=_positive_float(timeout_raw, 30, "ZETARIS_TIMEOUT_SECONDS"),
         zetaris_engine_id=_clean(env.get("ZETARIS_ENGINE_ID")),
         zetaris_sources=sources,
+        meterless_enabled=meterless_enabled,
         meterless_base_url=normalize_nightshift_base_url(
             env.get("METERLESS_BASE_URL", "")
         ),
-        meterless_runtime_token=_clean(env.get("METERLESS_RUNTIME_TOKEN")),
-        meterless_model=_clean(env.get("METERLESS_MODEL")) or "meterless/auto",
+        meterless_api_key=api_key,
+        meterless_model=model,
         meterless_app_id=_clean(env.get("METERLESS_APP_ID")) or "jirani-intelligence",
         meterless_timeout_seconds=_positive_float(
             night_timeout_raw, 60, "METERLESS_TIMEOUT_SECONDS"

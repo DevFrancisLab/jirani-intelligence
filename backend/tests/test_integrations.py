@@ -20,13 +20,15 @@ FIXED = datetime(2026, 10, 26, 18, 0, tzinfo=timezone.utc)
 
 def _settings(**overrides):
     env = {
-        "ZETARIS_REST_URL": "http://localhost:8888/api/v1.0",
+        "ZETARIS_BASE_URL": "http://localhost:3000",
         "ZETARIS_ORG_ID": "7",
         "ZETARIS_ORG_SLUG": "not-an-endpoint",
         "ZETARIS_API_KEY": "test-api-key",
         "ZETARIS_SOURCES": "planning.permits|Permit rows",
+        "METERLESS_ENABLED": "true",
         "METERLESS_BASE_URL": "http://127.0.0.1:8088/v1",
-        "METERLESS_RUNTIME_TOKEN": "test-runtime-token",
+        "METERLESS_API_KEY": "test-runtime-token",
+        "METERLESS_MODEL": "gpt-oss-20b-nvidia-test",
         "SCOUT_SIGNING_KEY": "test-signing-key",
         "ZETARIS_QUERY_LIMIT": "25",
     }
@@ -67,14 +69,13 @@ def test_zetaris_query_is_allowlisted_and_hides_the_key_from_sql():
     assert results[0].ok
     assert results[0].rows[0]["permit_id"] == "A-1"
     body = recorder.calls[0]["body"]
-    assert body["sql"] == "SELECT * FROM planning.permits LIMIT 25"
-    assert body["source"] == "SqlEditor"
-    assert body["limit"] == 25
-    assert body["queryId"]
-    assert recorder.calls[0]["url"] == "http://localhost:8888/api/v1.0/sql-editor/sqls/run"
+    assert body == {"sql": "SELECT * FROM planning.permits LIMIT 25", "limit": 25}
+    assert recorder.calls[0]["url"] == "http://localhost:3000/api/proxy/sql-editor/sqls/run-query"
     assert "not-an-endpoint" not in recorder.calls[0]["url"]
     assert "test-api-key" not in json.dumps(body)
+    assert recorder.calls[0]["headers"]["Authorization"] == "Bearer test-api-key"
     assert recorder.calls[0]["headers"]["X-Org-ID"] == "7"
+    assert recorder.calls[0]["headers"]["Content-Type"] == "application/json"
 
 
 def test_sample_catalog_rows_are_excluded():
@@ -113,11 +114,11 @@ def test_zetaris_unauthorized_and_unrecognized_create_no_rows():
 
 def test_nightshift_status_and_cited_findings_only():
     settings = _settings()
-    offline = NightshiftClient(
+    disabled = NightshiftClient(
         load_settings({}, load_env_file=False),
         Recorder(lambda *args: (_ for _ in ()).throw(AssertionError("called"))),
     ).probe()
-    assert offline.state == "not_configured"
+    assert disabled.state == "disabled"
 
     denied = NightshiftClient(
         settings, Recorder(lambda *args: HttpResponse(401, None, ""))
@@ -126,15 +127,20 @@ def test_nightshift_status_and_cited_findings_only():
 
     listed = NightshiftClient(
         settings,
-        Recorder(lambda *args: HttpResponse(200, {"data": [{"id": "meterless/auto"}]}, "")),
+        Recorder(
+            lambda *args: HttpResponse(
+                200, {"data": [{"id": "gpt-oss-20b-nvidia-test"}]}, ""
+            )
+        ),
     ).probe()
     assert listed.online
+    assert listed.configured_model == "gpt-oss-20b-nvidia-test"
 
-    plain = NightshiftClient(
+    unavailable = NightshiftClient(
         settings,
-        Recorder(lambda *args: HttpResponse(200, {"data": [{"id": "other"}]}, "")),
+        Recorder(lambda *args: HttpResponse(200, {"data": [{"id": "other-model"}]}, "")),
     ).probe()
-    assert plain.state == "offline"
+    assert unavailable.state == "model_unavailable"
 
     skipped = NightshiftClient(settings, Recorder(lambda *args: HttpResponse(500, None, ""))).reason(
         "question", []
@@ -142,7 +148,9 @@ def test_nightshift_status_and_cited_findings_only():
     assert skipped.state == "skipped"
 
     def responder(method, url, headers, body, timeout):
+        assert body["model"] == "gpt-oss-20b-nvidia-test"
         assert "test-runtime-token" not in json.dumps(body)
+        assert headers["Authorization"] == "Bearer test-runtime-token"
         assert headers["meterless-app"] == "jirani-intelligence"
         assert headers["meterless-scope"] == "user"
         content = json.dumps(
@@ -154,7 +162,14 @@ def test_nightshift_status_and_cited_findings_only():
                 ]
             }
         )
-        return HttpResponse(200, {"choices": [{"message": {"content": content}}]}, "")
+        return HttpResponse(
+            200,
+            {
+                "model": "gpt-oss-20b-nvidia-test",
+                "choices": [{"message": {"content": content}}],
+            },
+            "",
+        )
 
     reasoned = NightshiftClient(settings, Recorder(responder)).reason(
         "housing permits",
@@ -163,6 +178,34 @@ def test_nightshift_status_and_cited_findings_only():
     assert reasoned.state == "ok"
     assert len(reasoned.findings) == 1
     assert reasoned.discarded == 2
+    assert reasoned.response_model == "gpt-oss-20b-nvidia-test"
+
+
+def test_nightshift_rejects_silent_model_fallback_and_rate_limits():
+    settings = _settings()
+
+    def mismatched(method, url, headers, body, timeout):
+        assert body["model"] == "gpt-oss-20b-nvidia-test"
+        return HttpResponse(
+            200,
+            {
+                "model": "llama-substituted",
+                "choices": [{"message": {"content": '{"findings":[]}'}}],
+            },
+            "",
+        )
+
+    result = NightshiftClient(settings, Recorder(mismatched)).reason(
+        "housing",
+        [{"record_id": "record-1", "fields": {"permit_id": "A-1"}}],
+    )
+    assert result.state == "model_mismatch"
+    assert result.findings == []
+
+    limited = NightshiftClient(
+        settings, Recorder(lambda *args: HttpResponse(429, None, "slow down"))
+    ).reason("housing", [{"record_id": "record-1", "fields": {}}])
+    assert limited.state == "rate_limited"
 
 
 def test_scout_routes_signs_and_refuses_bad_contracts():
@@ -242,9 +285,7 @@ def test_select_1_requires_the_documented_row_and_records_duration():
 
 def test_taxi_trips_sample_uses_the_fixed_limit_query():
     def responder(method, url, headers, body, timeout):
-        assert body["sql"] == TAXI_TRIPS_SAMPLE
-        assert body["limit"] == 5
-        assert body["source"] == "SqlEditor"
+        assert body == {"sql": TAXI_TRIPS_SAMPLE, "limit": 5}
         return HttpResponse(
             200,
             {"headers": ["vendor_id"], "data": [["2"]]},
@@ -254,4 +295,4 @@ def test_taxi_trips_sample_uses_the_fixed_limit_query():
     result = ZetarisClient(_settings(), Recorder(responder)).query_taxi_trips_sample()
     assert result.ok
     assert result.rows == [{"vendor_id": "2"}]
-    assert "not planning evidence" in result.detail
+    assert "not evidence about nairobi or kilimani" in result.detail.lower()

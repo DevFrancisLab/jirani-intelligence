@@ -46,7 +46,13 @@ def urllib_transport(
     data = None
     if body is not None:
         data = json.dumps(body).encode("utf-8")
-    request = Request(url, data=data, headers=headers, method=method)
+    # Some Meterless hotspot proxies (Cloudflare) reject empty/python-urllib agents.
+    merged = {
+        "User-Agent": "jirani-intelligence/1.0",
+        "Accept": "application/json",
+        **(headers or {}),
+    }
+    request = Request(url, data=data, headers=merged, method=method)
     try:
         with urlopen(request, timeout=timeout) as response:
             raw = response.read().decode("utf-8", errors="replace")

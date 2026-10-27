@@ -5,7 +5,7 @@
   "event_url": "https://hackathon.genai.works/event/open-agent-hackathon-2026",
   "track": "Solving Fragmented Intelligence",
   "track_number": "01",
-  "summary": "An investigation desk that turns one urban-planning question into a structured brief. It routes the question, retrieves records from sources registered in Zetaris, and asks Meterless Nightshift to reason only over those records.",
+  "summary": "An investigation desk with a React frontend and Django backend. It routes a planning question, retrieves records from Zetaris, recalls H-MEM notes, and uses Meterless Nightshift over retrieved evidence only.",
   "target_users": "Urban planners and municipal analysts whose records sit in separately registered sources.",
   "metadata_schema": {
     "official_json_schema_published": false,
@@ -17,52 +17,80 @@
       "The user submits one investigation question.",
       "Scout Intent issues a signed execution contract that names the allowed tools.",
       "Zetaris retrieves records from registered data sources.",
-      "Meterless Nightshift reasons over those records.",
-      "The desk returns findings, supporting records, uncertainty, evidence gaps, and next steps."
+      "H-MEM recalls prior notes with provenance.",
+      "Meterless Web receives a prepared cockpit task because the Web edition has no app endpoint.",
+      "A pasted Morning answer is stored as an AI interpretation, not as a retrieved fact.",
+      "The desk returns findings, supporting records, uncertainty, evidence gaps, prior memory, and next steps."
     ],
     "zetaris": {
       "where": "data access and query layer",
       "role": "Zetaris is the data access and query layer that retrieves records from registered data sources for the agent.",
-      "adapter": "integrations/zetaris.py",
-      "client": "Direct REST RestChannel from https://github.com/zetaris/getting-started/blob/main/scripts/zetaris_sql.py",
-      "route": "POST {ZETARIS_REST_URL}/sql-editor/sqls/run",
-      "request_body": ["queryId", "sql", "source=SqlEditor", "limit"],
+      "adapter": "backend/integrations/zetaris.py",
+      "ui": "React frontend calls Django /api/zetaris/*",
+      "client": "UI proxy from https://github.com/zetaris/getting-started/blob/main/scripts/query_zetaris.py",
+      "route": "POST {ZETARIS_BASE_URL}/api/proxy/sql-editor/sqls/run-query",
+      "request_body": ["sql", "limit", "engineId when ZETARIS_ENGINE_ID is set"],
       "headers": ["Authorization: Bearer ZETARIS_API_KEY", "X-Org-ID", "X-Request-ID", "Content-Type: application/json"],
       "org_slug_used_as_endpoint": false,
+      "direct_rest_used": false,
       "read_only": "One SELECT, WITH, SHOW, DESCRIBE, or EXPLAIN statement. CREATE, DROP, ALTER, INSERT, UPDATE, and DELETE are rejected before a request.",
       "sample_query": "SELECT * FROM NY_TAXI.taxi_trips LIMIT 5",
-      "sample_query_note": "The published SQL Workspace guide verifies SELECT * FROM NY_TAXI.taxi_zones LIMIT 5. taxi_trips uses that same LIMIT 5 shape and is not treated as planning evidence.",
-      "integration_status": "not_verified",
+      "sample_query_note": "Live read returned five rows. These are New York sample data, not evidence about Nairobi or Kilimani.",
+      "integration_status": "ui_proxy_select_1_and_taxi_trips_verified",
       "verified": {
-        "select_1": false,
-        "ny_taxi_taxi_trips": false,
-        "blocker": "ZETARIS_API_KEY is empty and ZETARIS_REST_URL is not set. ZETARIS_ORG_SLUG is not an API base."
+        "select_1": true,
+        "ny_taxi_taxi_trips": true,
+        "ny_taxi_taxi_trips_rows": 5,
+        "blocker": null
       }
     },
     "meterless_nightshift": {
       "role": "AI provider",
-      "what_it_does": "Nightshift is the OpenAI-compatible AI provider at METERLESS_BASE_URL. The reasoning step calls POST /v1/chat/completions with model meterless/auto and may accept only findings that cite retrieved record ids.",
-      "adapter": "integrations/meterless_nightshift.py",
-      "default_base_url": "http://127.0.0.1:8088/v1",
-      "default_model": "meterless/auto",
-      "integration_status": "not_verified"
+      "what_it_does": "When METERLESS_ENABLED=true, the desk calls the documented OpenAI-compatible Nightshift hotspot: POST {METERLESS_BASE_URL}/chat/completions with Bearer METERLESS_API_KEY and the exact METERLESS_MODEL id. When disabled, Meterless Web cockpit handoff is used instead. Web has no app endpoint.",
+      "adapter": "backend/integrations/meterless_nightshift.py",
+      "web_handoff_adapter": "backend/integrations/nightshift_web.py",
+      "ui": "React + Django /api/investigations/ and /api/nightshift/cockpit-answer/",
+      "web_cockpit_url": "https://meterless.ai/Nightshift/WEB",
+      "programmatic_api_on_web": false,
+      "route": "POST {METERLESS_BASE_URL}/chat/completions",
+      "intended_model_label": "GPT-OSS 20B (NVIDIA cloud)",
+      "nvidia_label_is_not_proof": true,
+      "silent_model_fallback": false,
+      "execution": "http_when_enabled_else_browser_handoff",
+      "integration_status": "scaffolded_not_live_verified",
+      "live_inference_verified": false,
+      "organizer_confirmation_required": true
     },
     "meterless_engine": {
+      "name": "H-MEM",
+      "also_present": "Scout Intent",
+      "spec": "https://github.com/Meterless/Meterless/blob/main/engines/hmem/AGENTS.md",
+      "what_it_does": "H-MEM records the question, retrieved Zetaris rows, and a pasted cockpit answer with provenance, then recalls prior notes with the documented hybrid score. The embedding is the reference token hash. Dreaming, sleep, and conflict resolution are not implemented.",
+      "adapter": "backend/integrations/hmem.py",
+      "implemented_scope": "Direct capture, required source, trust-ledger create/read entries, and hybrid retrieval. The upstream conformance suite has not been run.",
+      "integration_status": "local_recall_covered_by_unit_tests"
+    },
+    "scout_intent": {
       "name": "Scout Intent",
       "spec": "https://github.com/Meterless/Meterless/blob/main/engines/scout-intent/AGENTS.md",
       "what_it_does": "Scout Intent is the Meterless engine that runs before any action. It classifies the planning intent with a deterministic trigger scan, guards the prompt, routes to Zetaris and Nightshift tools, and signs an HMAC execution contract. The workflow refuses unsigned, tampered, or expired contracts.",
-      "adapter": "integrations/meterless_engine.py",
+      "adapter": "backend/integrations/meterless_engine.py",
       "implemented_scope": "In-process Stage-1 pipeline for a two-intent planning registry. Stage-2 semantic scoring is not implemented. The upstream Scout eval harness has not been run.",
       "integration_status": "local_pipeline_covered_by_unit_tests"
+    },
+    "stack": {
+      "frontend": "frontend/ (React + TypeScript + Vite)",
+      "backend": "backend/ (Django + DRF)",
+      "legacy_ui": "backend/legacy/streamlit_app.py"
     }
   },
   "nvidia": {
     "integrated": false,
-    "reason": "Rule 5.2 asks teams to integrate NVIDIA where it contributes. This 8 GB Mac path has no verified Nemotron or other NVIDIA workload, so none was added."
+    "reason": "Rule 5.2 asks teams to integrate NVIDIA where it contributes. The intended Meterless model label is GPT-OSS 20B (NVIDIA cloud). Live NVIDIA routing is not verified."
   },
   "cursor": {
     "used": true,
-    "how": "The repository, investigation workflow, adapters, tests, and Streamlit dashboard were written in Cursor during the build window."
+    "how": "The repository, Django API, React UI, adapters, and tests were written in Cursor during the build window."
   },
   "pre_existing_product_code": false
 }
